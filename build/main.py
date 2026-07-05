@@ -6,6 +6,7 @@ from app.android import AndroidBuilder
 from app.apple_go import AppleGoBuilder
 from app.apple_gomobile import AppleGoMobileBuilder
 from app.linux import LinuxBuilder
+from app.macos import MacOSBuilder
 from app.windows import WindowsBuilder
 
 LOCAL_ARG = "local"
@@ -49,6 +50,11 @@ if __name__ == "__main__":
     elif platform == "linux":
         use_local_xray_core = parse_local_arg(sys.argv[2:])
         builder = LinuxBuilder(build_dir_path(), use_local_xray_core)
+        builder.build()
+
+    elif platform == "macos":
+        use_local_xray_core = parse_local_arg(sys.argv[2:])
+        builder = MacOSBuilder(build_dir_path(), use_local_xray_core)
         builder.build()
 
     elif platform == "windows":
