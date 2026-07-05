@@ -195,12 +195,21 @@ jobs:
             zip -r "${d%/}.zip" "$d"
           done
 
-      - name: Create GitHub Release
+      # The org enforces immutable releases: a published release can't receive
+      # assets afterwards. Create the release as a DRAFT (assets attach fine to
+      # drafts), then publish it once all files are uploaded.
+      - name: Create draft GitHub Release with assets
         uses: softprops/action-gh-release@v2
         with:
           name: libXray ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           prerelease: true
+          draft: true
           files: dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
