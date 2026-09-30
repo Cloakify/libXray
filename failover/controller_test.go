@@ -36,7 +36,8 @@ func (f *fakePinner) get() string          { f.mu.Lock(); defer f.mu.Unlock(); r
 
 func fastTiming() Timing {
 	return Timing{
-		ProbeInterval: 5 * time.Millisecond, StartupInterval: 2 * time.Millisecond, StartupWindow: 10 * time.Millisecond,
+		ProbeInterval: 5 * time.Millisecond, ConfirmInterval: 2 * time.Millisecond,
+		StartupInterval: 2 * time.Millisecond, StartupWindow: 10 * time.Millisecond,
 		FailThreshold: 3, SearchBackoff: 40 * time.Millisecond, DemoteFor: time.Hour,
 		FreshEvery: time.Hour, ProbeTimeout: 50 * time.Millisecond, VerifyBatch: 3,
 	}

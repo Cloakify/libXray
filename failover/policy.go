@@ -16,6 +16,7 @@ import (
 // Android service cannot disagree about it.
 type Timing struct {
 	ProbeInterval   time.Duration // gap between probes of the current server
+	ConfirmInterval time.Duration // gap between probes confirming a failure
 	StartupInterval time.Duration // gap during the first StartupWindow
 	StartupWindow   time.Duration
 	FailThreshold   int           // consecutive failures that make an outage
@@ -28,12 +29,13 @@ type Timing struct {
 
 var DefaultTiming = Timing{
 	ProbeInterval:   10 * time.Second,
+	ConfirmInterval: 3 * time.Second,
 	StartupInterval: 3 * time.Second,
 	StartupWindow:   30 * time.Second,
 	FailThreshold:   3,
 	SearchBackoff:   30 * time.Second,
 	DemoteFor:       10 * time.Minute,
-	FreshEvery:      60 * time.Second,
+	FreshEvery:      30 * time.Second,
 	ProbeTimeout:    5 * time.Second,
 	VerifyBatch:     3,
 }
@@ -94,7 +96,14 @@ func (p *Policy) Current() string { return p.current }
 
 // NextProbeIn is the wait before the next probe. The first StartupWindow is
 // probed faster, so a server that is dead from the start costs ~10 s, not ~30.
+// A failure is confirmed fast too: the probes that decide whether it is an
+// outage come ConfirmInterval apart, so a dead server is left in ~12-20 s
+// instead of ~30. Once the threshold is reached the pace drops back — a
+// search that found nothing must not turn into probing every few seconds.
 func (p *Policy) NextProbeIn(now time.Time) time.Duration {
+	if p.fails > 0 && p.fails < p.t.FailThreshold {
+		return p.t.ConfirmInterval
+	}
 	if now.Sub(p.started) < p.t.StartupWindow {
 		return p.t.StartupInterval
 	}

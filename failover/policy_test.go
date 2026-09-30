@@ -11,7 +11,8 @@ var t0 = time.Unix(1_700_000_000, 0)
 
 func testTiming() Timing {
 	return Timing{
-		ProbeInterval: 10 * time.Second, StartupInterval: 3 * time.Second, StartupWindow: 30 * time.Second,
+		ProbeInterval: 10 * time.Second, ConfirmInterval: 3 * time.Second,
+		StartupInterval: 3 * time.Second, StartupWindow: 30 * time.Second,
 		FailThreshold: 3, SearchBackoff: 30 * time.Second, DemoteFor: 10 * time.Minute,
 		FreshEvery: 60 * time.Second, ProbeTimeout: 5 * time.Second, VerifyBatch: 3,
 	}
@@ -85,6 +86,23 @@ func TestStartupCadence(t *testing.T) {
 	}
 	if got := p.NextProbeIn(t0.Add(30 * time.Second)); got != 10*time.Second {
 		t.Fatalf("steady cadence = %v", got)
+	}
+}
+
+func TestFailuresAreConfirmedFast(t *testing.T) {
+	p := newTestPolicy(t, "a", "b")
+	steady := t0.Add(time.Minute) // past the startup window
+	if got := p.NextProbeIn(steady); got != 10*time.Second {
+		t.Fatalf("healthy cadence = %v", got)
+	}
+	p.OnProbe(steady, false)
+	if got := p.NextProbeIn(steady); got != 3*time.Second {
+		t.Fatalf("cadence after one failure = %v, want the confirmation interval", got)
+	}
+	p.OnProbe(steady.Add(3*time.Second), false)
+	p.OnProbe(steady.Add(6*time.Second), false) // threshold: search
+	if got := p.NextProbeIn(steady.Add(6 * time.Second)); got != 10*time.Second {
+		t.Fatalf("cadence after the threshold = %v, want the steady interval", got)
 	}
 }
 
