@@ -105,6 +105,11 @@ jobs:
       - name: Setup Android SDK
         if: matrix.target == 'android'
         uses: android-actions/setup-android@v3
+        with:
+          # The default adds the legacy `tools` package, which cmdline-tools
+          # 16 no longer carries (sdkmanager fails the whole step). gomobile
+          # needs only the SDK root; the NDK comes from the next step.
+          packages: platform-tools
 
       - name: Setup Android NDK
         if: matrix.target == 'android'
