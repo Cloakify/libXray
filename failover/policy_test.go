@@ -101,6 +101,35 @@ func TestFreshEveryMinute(t *testing.T) {
 	}
 }
 
+func TestProbesStayFreshAfterAFailure(t *testing.T) {
+	p := newTestPolicy(t, "a", "b")
+	p.OnProbe(t0.Add(10*time.Second), false)
+	if !p.TakeFresh(t0.Add(20 * time.Second)) {
+		t.Fatal("probe after a failure reused the kept-alive connection")
+	}
+	p.OnProbe(t0.Add(20*time.Second), true)
+	if p.TakeFresh(t0.Add(30 * time.Second)) {
+		t.Fatal("still fresh after a success")
+	}
+}
+
+// New handshakes blocked while the kept-alive connection lives: only fresh
+// probes fail. Before the fix, the kept-alive successes in between reset the
+// count and the outage was never declared.
+func TestBlockedHandshakesReachTheThreshold(t *testing.T) {
+	p := newTestPolicy(t, "a", "b")
+	now := t0.Add(30 * time.Second) // past the startup window
+	searched := false
+	for i := 0; i < 12 && !searched; i++ {
+		now = now.Add(10 * time.Second)
+		fresh := p.TakeFresh(now)
+		searched = p.OnProbe(now, !fresh) // kept-alive passes, fresh fails
+	}
+	if !searched {
+		t.Fatal("blocked new connections never triggered a search")
+	}
+}
+
 func TestCandidatesBatchedAndOrdered(t *testing.T) {
 	p := newTestPolicy(t, "a", "b", "c", "d", "e")
 	want := [][]string{{"b", "c", "d"}, {"e"}}

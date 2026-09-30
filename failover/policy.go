@@ -104,7 +104,16 @@ func (p *Policy) NextProbeIn(now time.Time) time.Duration {
 // TakeFresh reports whether this probe must use a new connection, and
 // consumes the turn. A kept-alive connection can outlive a server that no
 // longer accepts new ones — which is what the user's traffic needs.
+//
+// Once a probe has failed, every probe is fresh until one succeeds: a
+// kept-alive success in between would reset the count, and a server that
+// blocks new handshakes (a firewall, a filter keyed on the handshake) would
+// never reach FailThreshold while no new connection of the user's got through.
 func (p *Policy) TakeFresh(now time.Time) bool {
+	if p.fails > 0 {
+		p.lastFresh = now
+		return true
+	}
 	if now.Sub(p.lastFresh) < p.t.FreshEvery {
 		return false
 	}
