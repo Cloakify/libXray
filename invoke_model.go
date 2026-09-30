@@ -17,6 +17,8 @@ const (
 	LibXrayMethodStopXray                    LibXrayMethod = "stopXray"
 	LibXrayMethodXrayVersion                 LibXrayMethod = "xrayVersion"
 	LibXrayMethodGetXrayState                LibXrayMethod = "getXrayState"
+	LibXrayMethodGetFailoverState            LibXrayMethod = "getFailoverState"
+	LibXrayMethodSetFailoverOrder            LibXrayMethod = "setFailoverOrder"
 )
 
 type LibXrayInvokeRequest struct {
@@ -81,6 +83,13 @@ type PingResponse struct {
 
 type RunXrayRequest struct {
 	ConfigPath string `json:"configPath,omitempty"`
+	// Smart mode's sticky failover (failover.Settings); empty for every other
+	// session. Raw so the gomobile-bound API stays free of the failover types.
+	Failover json.RawMessage `json:"failover,omitempty"`
+}
+
+type SetFailoverOrderRequest struct {
+	Order []string `json:"order,omitempty"`
 }
 
 type RunXrayFromJSONRequest struct {

@@ -1,6 +1,11 @@
 package main
 
+/*
+#include <stdlib.h>
+*/
 import "C"
+
+import "unsafe"
 
 func main() {}
 
@@ -8,4 +13,12 @@ func main() {}
 func CGoInvoke(requestJSON *C.char) *C.char {
 	text := C.GoString(requestJSON)
 	return C.CString(Invoke(text))
+}
+
+// CGoFree releases a string CGoInvoke returned. It must be freed by the C
+// runtime that allocated it — this library's — which a caller cannot name.
+//
+//export CGoFree
+func CGoFree(p *C.char) {
+	C.free(unsafe.Pointer(p))
 }

@@ -7,8 +7,30 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/xtls/libxray/failover"
 	"github.com/xtls/xray-core/common/platform"
 )
+
+func TestInvokeGetFailoverStateWithoutController(t *testing.T) {
+	resp := invokeForTest(t, LibXrayMethodGetFailoverState, nil, nil)
+	if !resp.Success {
+		t.Fatalf("getFailoverState failed: %s", resp.Err)
+	}
+	var st failover.State
+	if err := json.Unmarshal(resp.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Running {
+		t.Fatal("reports running with no controller")
+	}
+}
+
+func TestInvokeSetFailoverOrderWithoutController(t *testing.T) {
+	resp := invokeForTest(t, LibXrayMethodSetFailoverOrder, nil, &SetFailoverOrderRequest{Order: []string{"proxy-00"}})
+	if resp.Success {
+		t.Fatal("setFailoverOrder succeeded with no controller")
+	}
+}
 
 type testResponse struct {
 	Success bool            `json:"success"`

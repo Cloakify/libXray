@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/xtls/libxray/failover"
 	"github.com/xtls/libxray/geo"
 	"github.com/xtls/libxray/nodep"
 	"github.com/xtls/libxray/share"
@@ -46,7 +47,13 @@ func Invoke(requestJSON string) string {
 	case LibXrayMethodRunXrayFromJson:
 		return invokeRunXrayFromJSON(request.Payload)
 	case LibXrayMethodStopXray:
+		// The controller probes through the instance: stop it first.
+		failover.Stop()
 		return encodeInvokeNoDataResponse(xray.StopXray())
+	case LibXrayMethodGetFailoverState:
+		return encodeInvokeResponse(failover.CurrentState(), nil)
+	case LibXrayMethodSetFailoverOrder:
+		return invokeSetFailoverOrder(request.Payload)
 	case LibXrayMethodXrayVersion:
 		return encodeInvokeResponse(&XrayVersionResponse{Version: xray.XrayVersion()}, nil)
 	case LibXrayMethodGetXrayState:
@@ -192,8 +199,25 @@ func invokeRunXray(payload json.RawMessage) string {
 	if err != nil {
 		return encodeInvokeNoDataResponse(err)
 	}
+	failover.Stop()
 	err = xray.RunXray(request.ConfigPath)
+	if err == nil && len(request.Failover) > 0 {
+		// A controller that cannot start leaves the tunnel up on the
+		// balancer's own strategy; getFailoverState reports why.
+		var settings failover.Settings
+		if jerr := json.Unmarshal(request.Failover, &settings); jerr == nil {
+			_ = failover.Start(xray.Instance(), settings)
+		}
+	}
 	return encodeInvokeNoDataResponse(err)
+}
+
+func invokeSetFailoverOrder(payload json.RawMessage) string {
+	request, err := decodePayload[SetFailoverOrderRequest](payload)
+	if err != nil {
+		return encodeInvokeNoDataResponse(err)
+	}
+	return encodeInvokeNoDataResponse(failover.SetOrder(request.Order))
 }
 
 func invokeRunXrayFromJSON(payload json.RawMessage) string {

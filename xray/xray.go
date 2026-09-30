@@ -76,6 +76,11 @@ func GetXrayState() bool {
 	return coreServer != nil && coreServer.IsRunning()
 }
 
+// Instance is the running core, or nil — for components that attach to it.
+func Instance() *core.Instance {
+	return coreServer
+}
+
 // Stop Xray instance.
 func StopXray() error {
 	if coreServer != nil {
