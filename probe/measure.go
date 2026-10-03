@@ -134,7 +134,17 @@ func (s *session) shot(budget time.Duration) int64 {
 		return 0
 	}
 	done := make(chan int64, 1)
-	go func() { done <- s.exchange() }()
+	go func() {
+		// This runs in the app's own process, beside the tunnel: a panic here
+		// must cost one reading, not the app.
+		defer func() {
+			if recover() != nil {
+				s.spend()
+				done <- 0
+			}
+		}()
+		done <- s.exchange()
+	}()
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {

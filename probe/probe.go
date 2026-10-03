@@ -72,13 +72,19 @@ var (
 // Start syncs the held servers to req.Servers, then measures req.Measure in
 // the background. A run already going is stopped first.
 func Start(req StartRequest) (StartResponse, error) {
-	StopSession()
+	mu.Lock()
+	defer mu.Unlock()
+	// Under the lock, so two overlapping Starts cannot orphan a run. Its
+	// workers never take mu, so waiting for them here cannot deadlock.
+	if r := active; r != nil {
+		active = nil
+		r.cancel()
+		r.wg.Wait()
+	}
 	tg, err := parseTarget(req.URL)
 	if err != nil {
 		return StartResponse{}, err
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	if current == nil {
 		h, err := newHost()
 		if err != nil {
