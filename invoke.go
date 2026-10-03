@@ -8,6 +8,7 @@ import (
 	"github.com/xtls/libxray/failover"
 	"github.com/xtls/libxray/geo"
 	"github.com/xtls/libxray/nodep"
+	"github.com/xtls/libxray/probe"
 	"github.com/xtls/libxray/share"
 	"github.com/xtls/libxray/xray"
 	"github.com/xtls/xray-core/common/platform"
@@ -47,13 +48,29 @@ func Invoke(requestJSON string) string {
 	case LibXrayMethodRunXrayFromJson:
 		return invokeRunXrayFromJSON(request.Payload)
 	case LibXrayMethodStopXray:
-		// The controller probes through the instance: stop it first.
+		// The controller probes through the instance: stop it first. A
+		// latency sweep's readings across a disconnect are discarded anyway.
 		failover.Stop()
-		return encodeInvokeNoDataResponse(xray.StopXray())
+		probe.StopSession()
+		err := xray.StopXray()
+		// Closing the tunnel's core leaves the process-global dialer on a
+		// dead instance; the probe host is the live one now.
+		probe.PointDialerAtHost()
+		return encodeInvokeNoDataResponse(err)
 	case LibXrayMethodGetFailoverState:
 		return encodeInvokeResponse(failover.CurrentState(), nil)
 	case LibXrayMethodSetFailoverOrder:
 		return invokeSetFailoverOrder(request.Payload)
+	case LibXrayMethodStartProbe:
+		return invokeStartProbe(request.Payload)
+	case LibXrayMethodProbeResults:
+		return encodeInvokeResponse(probe.Results(), nil)
+	case LibXrayMethodStopProbe:
+		probe.StopSession()
+		return encodeInvokeNoDataResponse(nil)
+	case LibXrayMethodCloseProbeHost:
+		probe.CloseHost()
+		return encodeInvokeNoDataResponse(nil)
 	case LibXrayMethodXrayVersion:
 		return encodeInvokeResponse(&XrayVersionResponse{Version: xray.XrayVersion()}, nil)
 	case LibXrayMethodGetXrayState:
@@ -200,6 +217,9 @@ func invokeRunXray(payload json.RawMessage) string {
 		return encodeInvokeNoDataResponse(err)
 	}
 	failover.Stop()
+	// A sweep's dials must not race the new core's construction, and its
+	// readings across a connect are discarded anyway.
+	probe.StopSession()
 	err = xray.RunXray(request.ConfigPath)
 	if err == nil && len(request.Failover) > 0 {
 		// A controller that cannot start leaves the tunnel up on the
@@ -225,6 +245,19 @@ func invokeRunXrayFromJSON(payload json.RawMessage) string {
 	if err != nil {
 		return encodeInvokeNoDataResponse(err)
 	}
+	probe.StopSession()
 	err = xray.RunXrayFromJSON(request.ConfigJSON)
 	return encodeInvokeNoDataResponse(err)
+}
+
+func invokeStartProbe(payload json.RawMessage) string {
+	request, err := decodePayload[probe.StartRequest](payload)
+	if err != nil {
+		return encodeInvokeResponse(nil, err)
+	}
+	response, err := probe.Start(request)
+	if err != nil {
+		return encodeInvokeResponse(nil, err)
+	}
+	return encodeInvokeResponse(&response, nil)
 }

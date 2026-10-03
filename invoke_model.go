@@ -19,6 +19,10 @@ const (
 	LibXrayMethodGetXrayState                LibXrayMethod = "getXrayState"
 	LibXrayMethodGetFailoverState            LibXrayMethod = "getFailoverState"
 	LibXrayMethodSetFailoverOrder            LibXrayMethod = "setFailoverOrder"
+	LibXrayMethodStartProbe                  LibXrayMethod = "startProbe"
+	LibXrayMethodProbeResults                LibXrayMethod = "probeResults"
+	LibXrayMethodStopProbe                   LibXrayMethod = "stopProbe"
+	LibXrayMethodCloseProbeHost              LibXrayMethod = "closeProbeHost"
 )
 
 type LibXrayInvokeRequest struct {
