@@ -6,23 +6,32 @@ from app.cmd import create_dir_if_not_exists, delete_dir_if_exists
 
 
 class WindowsBuilder(Builder):
-    def __init__(self, build_dir: str, use_local_xray_core: bool = False):
-        super().__init__(build_dir, use_local_xray_core)
+    def __init__(
+        self,
+        build_dir: str,
+        use_local_xray_core: bool = False,
+        keep_go_env_snapshot: bool = True,
+    ):
+        super().__init__(build_dir, use_local_xray_core, keep_go_env_snapshot)
         self.framework_dir = os.path.join(self.lib_dir, "windows_dll")
         delete_dir_if_exists(self.framework_dir)
         create_dir_if_not_exists(self.framework_dir)
         self.lib_file = "libXray.dll"
         self.lib_header_file = "libXray.h"
+        self.bin_file = "xray.exe"
 
     def before_build(self):
         super().before_build()
         self.prepare_static_lib()
 
     def build(self):
-        self.before_build()
-        self.build_windows()
-        self.after_build()
-        self.revert_go_env()
+        self.snapshot_go_env()
+        try:
+            self.before_build()
+            self.build_windows()
+            self.build_desktop_bin(self.bin_file)
+        finally:
+            self.restore_go_env()
 
     def build_windows(self):
         output_dir = self.framework_dir
@@ -41,13 +50,10 @@ class WindowsBuilder(Builder):
             "-s -w",
             f"-o={output_file}",
             "-buildmode=c-shared",
+            self.main_package(),
         ]
         os.chdir(self.lib_dir)
         print(cmd)
         ret = subprocess.run(cmd, env=run_env)
         if ret.returncode != 0:
             raise Exception(f"run_build_cmd failed")
-
-    def after_build(self):
-        super().after_build()
-        self.reset_files()
