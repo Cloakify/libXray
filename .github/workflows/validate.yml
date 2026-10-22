@@ -20,8 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -44,6 +43,11 @@ jobs:
           grep -q 'CGoFree' linux_so/libXray.h
           nm -D linux_so/libXray.so | grep -q ' CGoFree$'
           ./bin/xray -h
+
+      - name: Verify the built core
+        run: |
+          python3 build/test_verify_core.py
+          python3 build/verify_core.py linux_so/libXray.so
 
       - name: Verify source was restored
         run: git diff --exit-code

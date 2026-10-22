@@ -1,6 +1,6 @@
 module github.com/xtls/libxray
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/metacubex/age v0.0.0-20260603010618-28d156b4ea78

@@ -66,11 +66,13 @@ jobs:
       # =========================
       # Go setup
       # =========================
+      # go.mod's `go` line is the floor: Xray-core v26.10.21's certificate fix
+      # needs Go 1.27.3, and setup-go's GOTOOLCHAIN=local makes the go command
+      # refuse anything older.
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: stable
-          check-latest: true
+          go-version-file: go.mod
 
       - name: Download Go modules
         run: go mod download
@@ -177,6 +179,8 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
+          # gomobile at the version go.mod pins, not whatever @latest is today.
+          export LIBXRAY_GOMOBILE_VERSION="$(go list -m -f '{{.Version}}' golang.org/x/mobile)"
           python3 build/main.py android
 
       - name: Test Windows desktop Core
@@ -222,6 +226,23 @@ jobs:
         if: matrix.target == 'apple'
         run: |
           python3 build/main.py apple go
+
+      # The certificate fix rides on both the core and the toolchain: check
+      # what was built, not what the runner says it has. A clean Windows 10
+      # has no C++ runtime, so the DLL must not import one.
+      - name: Verify the built core
+        if: matrix.target == 'linux' || matrix.target == 'windows' || matrix.target == 'android'
+        shell: bash
+        run: |
+          set -e
+          case "${{ matrix.target }}" in
+            linux) python build/verify_core.py linux_so/libXray.so ;;
+            windows)
+              python -m pip install pefile==2024.8.26
+              python build/verify_core.py --no-cxx-runtime windows_dll/libXray.dll
+              ;;
+            android) python build/verify_core.py libXray.aar ;;
+          esac
 
       # =========================
       # Collect artifacts
