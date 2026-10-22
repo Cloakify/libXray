@@ -47,8 +47,21 @@ def parse_version_m(text: str) -> tuple[tuple[int, ...] | None, str | None]:
     return (version_tuple(go.group(1)) if go else None, dep.group(1) if dep else None)
 
 
+# Runtimes a clean Windows 10 lacks: MSVC's C++ runtime and MinGW's shared
+# runtime libraries.
+_FOREIGN_RUNTIMES = ("VCRUNTIME", "MSVCP", "LIBSTDC++", "LIBGCC_S", "LIBWINPTHREAD")
+
+
 def cxx_runtime_imports(dll_names: list[str]) -> list[str]:
-    return sorted(name for name in dll_names if name.upper().startswith(("VCRUNTIME", "MSVCP")))
+    return sorted(name for name in dll_names if name.upper().startswith(_FOREIGN_RUNTIMES))
+
+
+def dll_problems(artifact: str, dll_names: list[str]) -> list[str]:
+    # A PE with no imports parsed means the parse failed, not a clean DLL.
+    if not dll_names:
+        return [f"{artifact}: no imports could be read"]
+    runtime = cxx_runtime_imports(dll_names)
+    return [f"{artifact}: imports a runtime a clean Windows lacks: {', '.join(runtime)}"] if runtime else []
 
 
 def problems(binary: str, report: str, floor: tuple[int, ...], xray_core: str) -> list[str]:
@@ -99,11 +112,12 @@ def main(argv: list[str] | None = None) -> int:
                 these = problems(str(binary), report, floor, xray_core)
                 found += these
                 if not these:
-                    print(f"{binary}: go>={version_text(floor)}, xray-core {xray_core}")
+                    go, _ = parse_version_m(report)
+                    print(f"{binary}: go{version_text(go)} (floor {version_text(floor)}), xray-core {xray_core}")
             if args.no_cxx_runtime and artifact.suffix.lower() == ".dll":
-                runtime = cxx_runtime_imports(dll_imports(artifact))
-                if runtime:
-                    found.append(f"{artifact}: imports a C++ runtime: {', '.join(runtime)}")
+                names = dll_imports(artifact)
+                found += dll_problems(str(artifact), names)
+                print(f"{artifact}: imports {', '.join(sorted(names))}")
     for problem in found:
         print(problem, file=sys.stderr)
     return 1 if found else 0

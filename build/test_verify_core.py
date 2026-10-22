@@ -66,6 +66,18 @@ class VerifyCoreTest(unittest.TestCase):
         self.assertEqual(verify_core.cxx_runtime_imports(names), ["VCRUNTIME140.dll", "msvcp140.dll"])
         self.assertEqual(verify_core.cxx_runtime_imports(["KERNEL32.dll", "msvcrt.dll"]), [])
 
+    def test_mingw_runtime_libraries_are_found_too(self):
+        names = ["KERNEL32.dll", "libwinpthread-1.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll"]
+        self.assertEqual(
+            verify_core.cxx_runtime_imports(names), ["libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]
+        )
+
+    def test_a_dll_with_only_system_imports_passes(self):
+        self.assertEqual(verify_core.dll_problems("libXray.dll", ["KERNEL32.dll", "msvcrt.dll", "WS2_32.dll"]), [])
+
+    def test_no_imports_read_is_a_failure_not_a_pass(self):
+        self.assertEqual(verify_core.dll_problems("libXray.dll", []), ["libXray.dll: no imports could be read"])
+
 
 if __name__ == "__main__":
     unittest.main()

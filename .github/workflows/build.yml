@@ -238,6 +238,7 @@ jobs:
           case "${{ matrix.target }}" in
             linux) python build/verify_core.py linux_so/libXray.so ;;
             windows)
+              # Pinned like the actions: the check must not change under us.
               python -m pip install pefile==2024.8.26
               python build/verify_core.py --no-cxx-runtime windows_dll/libXray.dll
               ;;
