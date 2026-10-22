@@ -63,7 +63,12 @@ func GetXrayState() bool {
 }
 
 // Instance is the running core, or nil — for components that attach to it.
+// RunXray holds coreServerMu across the core's construction and start, so
+// this must never be reached from code the core runs while starting (log
+// handlers, dialer or observatory callbacks).
 func Instance() *core.Instance {
+	coreServerMu.Lock()
+	defer coreServerMu.Unlock()
 	return coreServer
 }
 
