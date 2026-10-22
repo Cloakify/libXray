@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync/atomic"
@@ -183,12 +181,8 @@ func TestProbeKeepsUnchangedHandlersAcrossSyncs(t *testing.T) {
 // closed.
 func TestProbeLeavesTheTunnelsDialerAlone(t *testing.T) {
 	useFastTiming(t)
-	cfg := filepath.Join(t.TempDir(), "tunnel.json")
 	tunnelConfig := `{"log":{"loglevel":"none"},"dns":{"hosts":{"pinned.test":"10.9.8.7"}},"outbounds":[{"protocol":"freedom"}]}`
-	if err := os.WriteFile(cfg, []byte(tunnelConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := xray.RunXray(cfg); err != nil {
+	if err := xray.RunXray(tunnelConfig); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { xray.StopXray() })
