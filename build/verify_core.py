@@ -5,8 +5,10 @@ version go.mod's `go` line names, from the xray-core version go.mod requires:
 Xray-core v26.10.21's certificate fix depends on both. An Android AAR is
 checked through each of its jni/*/libgojni.so. With --no-cxx-runtime, a
 Windows DLL must not import a C++ runtime, which a clean Windows 10 lacks.
+A universal macOS dylib is checked one architecture at a time.
 
     python build/verify_core.py linux_so/libXray.so
+    python build/verify_core.py macos_dylib/libXray.dylib
     python build/verify_core.py --no-cxx-runtime windows_dll/libXray.dll
     python build/verify_core.py libXray.aar
 """
@@ -76,7 +78,25 @@ def problems(binary: str, report: str, floor: tuple[int, ...], xray_core: str) -
     return found
 
 
+def is_universal_macho(head: bytes) -> bool:
+    """A universal (fat) Mach-O: one file holding a library per architecture."""
+    return head[:4] in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf")
+
+
 def go_binaries(artifact: Path, workdir: Path) -> list[Path]:
+    with open(artifact, "rb") as f:
+        head = f.read(4)
+    if is_universal_macho(head):
+        # Every architecture checked on its own, not just the first.
+        archs = subprocess.run(["lipo", "-archs", str(artifact)], capture_output=True, text=True, check=True)
+        thin = []
+        for arch in archs.stdout.split():
+            out = workdir / f"{artifact.stem}-{arch}{artifact.suffix}"
+            subprocess.run(["lipo", str(artifact), "-thin", arch, "-output", str(out)], check=True)
+            thin.append(out)
+        if not thin:
+            raise SystemExit(f"{artifact}: no architectures")
+        return thin
     if artifact.suffix != ".aar":
         return [artifact]
     with zipfile.ZipFile(artifact) as aar:

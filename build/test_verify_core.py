@@ -75,6 +75,12 @@ class VerifyCoreTest(unittest.TestCase):
     def test_a_dll_with_only_system_imports_passes(self):
         self.assertEqual(verify_core.dll_problems("libXray.dll", ["KERNEL32.dll", "msvcrt.dll", "WS2_32.dll"]), [])
 
+    def test_a_universal_macho_is_told_apart(self):
+        self.assertTrue(verify_core.is_universal_macho(b"\xca\xfe\xba\xbe\x00\x00\x00\x02"))
+        self.assertTrue(verify_core.is_universal_macho(b"\xca\xfe\xba\xbf"))
+        for single in (b"\xcf\xfa\xed\xfe", b"\x7fELF", b"MZ\x90\x00", b"PK\x03\x04", b""):
+            self.assertFalse(verify_core.is_universal_macho(single), single)
+
     def test_no_imports_read_is_a_failure_not_a_pass(self):
         self.assertEqual(verify_core.dll_problems("libXray.dll", []), ["libXray.dll: no imports could be read"])
 
