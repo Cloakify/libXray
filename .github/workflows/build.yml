@@ -19,9 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Only what Cloakify ships: a failed leg blocks the release. The
-          # per-target steps below stay as upstream wrote them, so the other
-          # targets come back by adding their entries.
+          # Only what Cloakify ships or will: a failed leg blocks the release.
+          # The per-target steps below stay as upstream wrote them, so the
+          # other targets come back by adding their entries. Apple runs on a
+          # stable macOS image, not upstream's preview one.
           - runner: ubuntu-24.04
             target: linux
             arch: x64
@@ -34,6 +35,12 @@ jobs:
             arch: x64
             goarch: amd64
             artifact: windows-x64
+          - runner: macos-26
+            target: apple
+            artifact: apple-cgo
+          - runner: macos-26
+            target: macos
+            artifact: macos-dylib
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -137,7 +144,7 @@ jobs:
       # Apple toolchain
       # =========================
       - name: Select Xcode
-        if: matrix.target == 'apple'
+        if: matrix.target == 'apple' || matrix.target == 'macos'
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
@@ -227,11 +234,19 @@ jobs:
         run: |
           python3 build/main.py apple go
 
+      # A c-shared dylib for apps that load libXray over FFI, as on Windows
+      # and Linux (build/app/macos.py).
+      - name: Build macOS dylib (FFI)
+        if: matrix.target == 'macos'
+        run: |
+          python3 build/main.py macos
+
       # The certificate fix rides on both the core and the toolchain: check
       # what was built, not what the runner says it has. A clean Windows 10
-      # has no C++ runtime, so the DLL must not import one.
+      # has no C++ runtime, so the DLL must not import one. The xcframework's
+      # static libraries carry no build information for `go version -m`;
+      # their toolchain is go.mod's floor, which the go command enforces.
       - name: Verify the built core
-        if: matrix.target == 'linux' || matrix.target == 'windows' || matrix.target == 'android'
         shell: bash
         run: |
           set -e
@@ -243,6 +258,27 @@ jobs:
               python build/verify_core.py --no-cxx-runtime windows_dll/libXray.dll
               ;;
             android) python build/verify_core.py libXray.aar ;;
+            macos)
+              lib=macos_dylib/libXray.dylib
+              python build/verify_core.py "$lib"
+              for arch in arm64 x86_64; do
+                lipo "$lib" -verify_arch "$arch" || { echo "$lib: no $arch"; exit 1; }
+                # macOS 12, as build/app/macos.py and the Apple build's macOS slices.
+                minos="$(otool -arch "$arch" -l "$lib" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')"
+                [ "$minos" = "12.0" ] || { echo "$lib ($arch): minos $minos, expected 12.0"; exit 1; }
+              done
+              for sym in _CGoInvoke _CGoFree; do
+                nm -gU "$lib" | grep -q " T $sym\$" || { echo "$lib: $sym not exported"; exit 1; }
+              done
+              otool -D "$lib"
+              ;;
+            apple)
+              for slice in ios-arm64 ios-arm64_x86_64-simulator macos-arm64_x86_64; do
+                lib="LibXray.xcframework/$slice/libXray.a"
+                [ -f "$lib" ] || { echo "missing $lib"; ls LibXray.xcframework; exit 1; }
+                nm -gU "$lib" 2>/dev/null | grep -q " T _CGoInvoke\$" || { echo "$lib: _CGoInvoke not exported"; exit 1; }
+              done
+              ;;
           esac
 
       # =========================
@@ -274,6 +310,11 @@ jobs:
             apple)
               mkdir -p "dist/${{ matrix.artifact }}"
               cp -R LibXray.xcframework "dist/${{ matrix.artifact }}/"
+              ;;
+            macos)
+              mkdir -p "dist/${{ matrix.artifact }}"
+              cp macos_dylib/libXray.dylib "dist/${{ matrix.artifact }}/"
+              cp macos_dylib/libXray.h "dist/${{ matrix.artifact }}/"
               ;;
           esac
       # =========================

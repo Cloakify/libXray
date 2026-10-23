@@ -12,6 +12,7 @@ from app.apple_go import AppleGoBuilder
 from app.apple_gomobile import AppleGoMobileBuilder
 from app.build import LIBXRAY_MOD_NAME, XRAY_CORE_MOD_NAME, DEFAULT_XRAY_CORE_VERSION
 from app.linux import LinuxBuilder
+from app.macos import MacOSBuilder
 from app.windows import WindowsBuilder
 from main import parse_build_args
 
@@ -157,7 +158,7 @@ class BuildTest(unittest.TestCase):
     def test_all_builders_accept_snapshot_option(self):
         for builder_type in (
             AndroidBuilder, AppleGoBuilder, AppleGoMobileBuilder,
-            LinuxBuilder, WindowsBuilder,
+            LinuxBuilder, MacOSBuilder, WindowsBuilder,
         ):
             for keep_snapshot in (False, True):
                 with self.subTest(builder=builder_type.__name__, keep_snapshot=keep_snapshot):
@@ -174,6 +175,7 @@ class BuildTest(unittest.TestCase):
             (["apple", "go"], "app.apple_go.AppleGoBuilder"),
             (["apple", "gomobile"], "app.apple_gomobile.AppleGoMobileBuilder"),
             (["linux"], "app.linux.LinuxBuilder"),
+            (["macos"], "app.macos.MacOSBuilder"),
             (["windows"], "app.windows.WindowsBuilder"),
         ):
             for options in ([], ["local"], ["--no-snapshot"], ["local", "--no-snapshot"], ["--no-snapshot", "local"]):
