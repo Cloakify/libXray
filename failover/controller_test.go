@@ -36,7 +36,7 @@ func (f *fakePinner) get() string          { f.mu.Lock(); defer f.mu.Unlock(); r
 
 func fastTiming() Timing {
 	return Timing{
-		ProbeInterval: 5 * time.Millisecond, ConfirmInterval: 2 * time.Millisecond,
+		ProbeInterval:   5 * time.Millisecond,
 		StartupInterval: 2 * time.Millisecond, StartupWindow: 10 * time.Millisecond,
 		FailThreshold: 3, SearchBackoff: 40 * time.Millisecond, DemoteFor: time.Hour,
 		FreshEvery: time.Hour, ProbeTimeout: 50 * time.Millisecond, VerifyBatch: 3,
@@ -91,6 +91,86 @@ func TestControllerSwitchesAfterOutage(t *testing.T) {
 	if sw.From != "a" || sw.FromLabel != "Germany" || sw.To != "b" || sw.Reason != ReasonUnreachable || sw.Seq != 1 {
 		t.Fatalf("switch %+v", sw)
 	}
+}
+
+// A server that fails once and passes its confirmation stays: a blip is not
+// an outage.
+func TestControllerKeepsServerThatPassesConfirmation(t *testing.T) {
+	prober := &blipProber{up: map[string]bool{"a": true, "b": true}, failFirst: "a"}
+	pinner := &fakePinner{}
+	c := startWith(t, prober, pinner, "a", "b")
+	time.Sleep(100 * time.Millisecond)
+	if pinner.get() != "a" || c.State().LastSwitch != nil {
+		t.Fatalf("switched on one failure: pinned %q, state %+v", pinner.get(), c.State())
+	}
+}
+
+// The first fallbacks are verified together with the confirmation: a
+// confirmed outage switches without probing them again.
+func TestControllerSwitchesOnTheConfirmationsFallbacks(t *testing.T) {
+	pinner := &fakePinner{}
+	prober := &countingProber{up: map[string]bool{"a": false, "b": true}, pinner: pinner, probes: map[string]int{}}
+	startWith(t, prober, pinner, "a", "b")
+	eventually(t, "switch to b", func() bool { return pinner.get() == "b" })
+	if got := prober.before("b"); got != 1 {
+		t.Fatalf("b probed %d times before the switch, want once (alongside the confirmation)", got)
+	}
+}
+
+func startWith(t *testing.T, prober Prober, pinner *fakePinner, order ...string) *Controller {
+	t.Helper()
+	c, err := NewController(fastTiming(), order, nil, prober, pinner, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Stop)
+	return c
+}
+
+// blipProber fails the first probe of failFirst, then answers by up.
+type blipProber struct {
+	mu        sync.Mutex
+	up        map[string]bool
+	failFirst string
+	failed    bool
+}
+
+func (f *blipProber) Probe(ctx context.Context, tag string, fresh bool) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if tag == f.failFirst && !f.failed {
+		f.failed = true
+		return false
+	}
+	return f.up[tag]
+}
+
+// countingProber answers by up, and counts each tag's probes made before
+// the pinner moved to it.
+type countingProber struct {
+	mu     sync.Mutex
+	up     map[string]bool
+	pinner *fakePinner
+	probes map[string]int
+}
+
+func (f *countingProber) Probe(ctx context.Context, tag string, fresh bool) bool {
+	pinned := f.pinner.get()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if pinned != tag {
+		f.probes[tag]++
+	}
+	return f.up[tag]
+}
+
+func (f *countingProber) before(tag string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probes[tag]
 }
 
 func TestControllerStaysWhenNoFallbackIsHealthy(t *testing.T) {

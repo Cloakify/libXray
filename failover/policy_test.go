@@ -11,7 +11,7 @@ var t0 = time.Unix(1_700_000_000, 0)
 
 func testTiming() Timing {
 	return Timing{
-		ProbeInterval: 10 * time.Second, ConfirmInterval: 3 * time.Second,
+		ProbeInterval:   10 * time.Second,
 		StartupInterval: 3 * time.Second, StartupWindow: 30 * time.Second,
 		FailThreshold: 3, SearchBackoff: 30 * time.Second, DemoteFor: 10 * time.Minute,
 		FreshEvery: 60 * time.Second, ProbeTimeout: 5 * time.Second, VerifyBatch: 3,
@@ -89,20 +89,41 @@ func TestStartupCadence(t *testing.T) {
 	}
 }
 
-func TestFailuresAreConfirmedFast(t *testing.T) {
+func TestAFailureIsConfirmedAtOnce(t *testing.T) {
 	p := newTestPolicy(t, "a", "b")
 	steady := t0.Add(time.Minute) // past the startup window
-	if got := p.NextProbeIn(steady); got != 10*time.Second {
-		t.Fatalf("healthy cadence = %v", got)
+	if got := p.Confirmations(); got != 0 {
+		t.Fatalf("confirmations while healthy = %d", got)
 	}
 	p.OnProbe(steady, false)
-	if got := p.NextProbeIn(steady); got != 3*time.Second {
-		t.Fatalf("cadence after one failure = %v, want the confirmation interval", got)
+	if got := p.Confirmations(); got != 2 {
+		t.Fatalf("confirmations after one failure = %d, want the rest of the threshold", got)
 	}
-	p.OnProbe(steady.Add(3*time.Second), false)
-	p.OnProbe(steady.Add(6*time.Second), false) // threshold: search
-	if got := p.NextProbeIn(steady.Add(6 * time.Second)); got != 10*time.Second {
-		t.Fatalf("cadence after the threshold = %v, want the steady interval", got)
+	if got := p.NextProbeIn(steady); got != 10*time.Second {
+		t.Fatalf("cadence after one failure = %v, want the steady interval (confirmed at once)", got)
+	}
+	p.OnProbe(steady, false)
+	if !p.OnProbe(steady, false) {
+		t.Fatal("the confirmations did not declare the outage")
+	}
+	if got := p.Confirmations(); got != 0 {
+		t.Fatalf("confirmations after the outage = %d, want none (search instead)", got)
+	}
+}
+
+func TestCanSearchFollowsTheBackoff(t *testing.T) {
+	p := newTestPolicy(t, "a", "b")
+	if !p.CanSearch(t0) {
+		t.Fatal("no search allowed before any")
+	}
+	for i := 0; i < 3; i++ {
+		p.OnProbe(t0, false) // the threshold: a search at t0
+	}
+	if p.CanSearch(t0.Add(29 * time.Second)) {
+		t.Fatal("search allowed inside the backoff")
+	}
+	if !p.CanSearch(t0.Add(30 * time.Second)) {
+		t.Fatal("no search after the backoff")
 	}
 }
 

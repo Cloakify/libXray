@@ -147,15 +147,76 @@ func (c *Controller) loop(ctx context.Context) {
 		if ok {
 			c.stuck = false
 		}
+		confirmations := c.policy.Confirmations()
+		var first []string
+		if confirmations > 0 && c.policy.CanSearch(c.now()) {
+			if batches := c.policy.Candidates(c.now(), c.health); len(batches) > 0 {
+				first = batches[0]
+			}
+		}
 		c.mu.Unlock()
+		var verified map[string]bool
+		if confirmations > 0 {
+			search, verified = c.confirm(ctx, tag, confirmations, first)
+			if ctx.Err() != nil {
+				return
+			}
+		}
 		if search {
-			c.search(ctx)
+			c.search(ctx, verified)
 		}
 	}
 }
 
+// confirm decides whether the failure just seen is an outage: n more probes
+// of the current server at once, all fresh, and the outage declared when every
+// one fails. The first fallbacks are verified alongside, so a confirmed outage
+// switches without waiting for them — the whole decision takes one probe's
+// time. If the network itself is down they fail too, and nothing switches.
+// Returns whether to search, and the fallbacks' results by tag.
+func (c *Controller) confirm(ctx context.Context, tag string, n int, first []string) (bool, map[string]bool) {
+	confirmed := make([]bool, n)
+	results := make([]bool, len(first))
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			confirmed[i] = c.prober.Probe(ctx, tag, true)
+		}()
+	}
+	for i, fallback := range first {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = c.prober.Probe(ctx, fallback, true)
+		}()
+	}
+	wg.Wait()
+	verified := make(map[string]bool, len(first))
+	for i, fallback := range first {
+		verified[fallback] = results[i]
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, ok := range confirmed {
+		if ok {
+			c.policy.OnProbe(c.now(), true)
+			c.stuck = false
+			return false, nil
+		}
+	}
+	search := false
+	for range confirmed {
+		search = c.policy.OnProbe(c.now(), false)
+	}
+	return search, verified
+}
+
 // search verifies fallbacks batch by batch and pins the best one that passes.
-func (c *Controller) search(ctx context.Context) {
+// verified holds fallbacks already probed for this outage (by [confirm]):
+// their result stands, and they are not probed again.
+func (c *Controller) search(ctx context.Context, verified map[string]bool) {
 	c.mu.Lock()
 	batches := c.policy.Candidates(c.now(), c.health)
 	c.mu.Unlock()
@@ -163,6 +224,10 @@ func (c *Controller) search(ctx context.Context) {
 		results := make([]bool, len(batch))
 		var wg sync.WaitGroup
 		for i, tag := range batch {
+			if ok, seen := verified[tag]; seen {
+				results[i] = ok
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

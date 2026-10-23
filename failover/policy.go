@@ -16,10 +16,9 @@ import (
 // Android service cannot disagree about it.
 type Timing struct {
 	ProbeInterval   time.Duration // gap between probes of the current server
-	ConfirmInterval time.Duration // gap between probes confirming a failure
 	StartupInterval time.Duration // gap during the first StartupWindow
 	StartupWindow   time.Duration
-	FailThreshold   int           // consecutive failures that make an outage
+	FailThreshold   int           // failures in a row that make an outage: the one seen, then the rest confirmed at once
 	SearchBackoff   time.Duration // minimum gap between two fallback searches
 	DemoteFor       time.Duration // how long a server that just failed sinks to the end
 	FreshEvery      time.Duration // how often a probe must open a new connection
@@ -27,16 +26,19 @@ type Timing struct {
 	VerifyBatch     int // fallbacks verified in parallel per round
 }
 
+// DefaultTiming leaves a dead server within ~10 s: a probe every 3 s, each
+// given 3 s, and once one fails the two confirming it and the first fallbacks
+// are probed together — 3 + 3 + 3. A kept-alive connection that outlives a
+// server refusing new ones is caught by the fresh probe every 15 s instead.
 var DefaultTiming = Timing{
-	ProbeInterval:   10 * time.Second,
-	ConfirmInterval: 3 * time.Second,
+	ProbeInterval:   3 * time.Second,
 	StartupInterval: 3 * time.Second,
 	StartupWindow:   30 * time.Second,
 	FailThreshold:   3,
 	SearchBackoff:   30 * time.Second,
 	DemoteFor:       10 * time.Minute,
-	FreshEvery:      30 * time.Second,
-	ProbeTimeout:    5 * time.Second,
+	FreshEvery:      15 * time.Second,
+	ProbeTimeout:    3 * time.Second,
 	VerifyBatch:     3,
 }
 
@@ -94,20 +96,32 @@ func NewPolicy(t Timing, order []string, now time.Time) (*Policy, error) {
 
 func (p *Policy) Current() string { return p.current }
 
-// NextProbeIn is the wait before the next probe. The first StartupWindow is
-// probed faster, so a server that is dead from the start costs ~10 s, not ~30.
-// A failure is confirmed fast too: the probes that decide whether it is an
-// outage come ConfirmInterval apart, so a dead server is left in ~12-20 s
-// instead of ~30. Once the threshold is reached the pace drops back — a
-// search that found nothing must not turn into probing every few seconds.
+// NextProbeIn is the wait before the next probe. The first StartupWindow may
+// be probed at its own pace. A failure does not wait for the next probe: the
+// controller confirms it at once ([Policy.Confirmations]).
 func (p *Policy) NextProbeIn(now time.Time) time.Duration {
-	if p.fails > 0 && p.fails < p.t.FailThreshold {
-		return p.t.ConfirmInterval
-	}
 	if now.Sub(p.started) < p.t.StartupWindow {
 		return p.t.StartupInterval
 	}
 	return p.t.ProbeInterval
+}
+
+// Confirmations is how many probes of the current server must now run at
+// once to decide whether the failure just seen is an outage: the rest of
+// FailThreshold, or none when there is no failure to confirm or the outage
+// is already declared (a search that found nothing).
+func (p *Policy) Confirmations() int {
+	if p.fails > 0 && p.fails < p.t.FailThreshold {
+		return p.t.FailThreshold - p.fails
+	}
+	return 0
+}
+
+// CanSearch reports whether a fallback search would run now — none inside
+// SearchBackoff of the last. The controller verifies fallbacks alongside a
+// confirmation only then.
+func (p *Policy) CanSearch(now time.Time) bool {
+	return p.lastSearch.IsZero() || now.Sub(p.lastSearch) >= p.t.SearchBackoff
 }
 
 // TakeFresh reports whether this probe must use a new connection, and
@@ -139,10 +153,7 @@ func (p *Policy) OnProbe(now time.Time, ok bool) bool {
 		return false
 	}
 	p.fails++
-	if p.fails < p.t.FailThreshold {
-		return false
-	}
-	if !p.lastSearch.IsZero() && now.Sub(p.lastSearch) < p.t.SearchBackoff {
+	if p.fails < p.t.FailThreshold || !p.CanSearch(now) {
 		return false
 	}
 	p.lastSearch = now
