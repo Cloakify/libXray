@@ -98,7 +98,7 @@ func TestControllerSwitchesAfterOutage(t *testing.T) {
 func TestControllerKeepsServerThatPassesConfirmation(t *testing.T) {
 	prober := &blipProber{up: map[string]bool{"a": true, "b": true}, failFirst: "a"}
 	pinner := &fakePinner{}
-	c := startWith(t, prober, pinner, "a", "b")
+	c := runController(t, prober, pinner, "a", "b")
 	time.Sleep(100 * time.Millisecond)
 	if pinner.get() != "a" || c.State().LastSwitch != nil {
 		t.Fatalf("switched on one failure: pinned %q, state %+v", pinner.get(), c.State())
@@ -110,14 +110,14 @@ func TestControllerKeepsServerThatPassesConfirmation(t *testing.T) {
 func TestControllerSwitchesOnTheConfirmationsFallbacks(t *testing.T) {
 	pinner := &fakePinner{}
 	prober := &countingProber{up: map[string]bool{"a": false, "b": true}, pinner: pinner, probes: map[string]int{}}
-	startWith(t, prober, pinner, "a", "b")
+	runController(t, prober, pinner, "a", "b")
 	eventually(t, "switch to b", func() bool { return pinner.get() == "b" })
 	if got := prober.before("b"); got != 1 {
 		t.Fatalf("b probed %d times before the switch, want once (alongside the confirmation)", got)
 	}
 }
 
-func startWith(t *testing.T, prober Prober, pinner *fakePinner, order ...string) *Controller {
+func runController(t *testing.T, prober Prober, pinner *fakePinner, order ...string) *Controller {
 	t.Helper()
 	c, err := NewController(fastTiming(), order, nil, prober, pinner, nil)
 	if err != nil {
