@@ -21,72 +21,170 @@ import (
 )
 
 // Settings arrive with runXray. Timing is not among them — see Timing.
+//
+// The main fields are Smart's balancer, all or none: absent, no main
+// controller runs and none is reported missing. Regions are the per-app
+// countries of split tunnelling, each a balancer of its own
+// (cloakify-app/docs/superpowers/specs/2026-11-25-per-app-regions-design.md).
 type Settings struct {
+	BalancerTag string            `json:"balancerTag,omitempty"`
+	Order       []string          `json:"order,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	ProbeURL    string            `json:"probeUrl,omitempty"`
+	Regions     []RegionSettings  `json:"regions,omitempty"`
+}
+
+// RegionSettings is one country's controller. Fallback says where its
+// traffic goes while every one of its servers is down: "" nowhere (it stays
+// pinned to the dead server, so nothing leaves — the default), "main" the
+// main controller's current server, any other value that outbound.
+type RegionSettings struct {
 	BalancerTag string            `json:"balancerTag"`
 	Order       []string          `json:"order"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	ProbeURL    string            `json:"probeUrl"`
+	Fallback    string            `json:"fallback,omitempty"`
 }
+
+// FallbackMain is RegionSettings.Fallback's "the main controller's current
+// server".
+const FallbackMain = "main"
 
 var ErrNotRunning = errors.New("failover: not running")
 
+// run is one controller and its prober — or why it did not start.
+type run struct {
+	c   *Controller
+	p   *xrayProber
+	err string
+}
+
+func (r run) stop() {
+	if r.c != nil {
+		r.c.Stop()
+	}
+	if r.p != nil {
+		r.p.close()
+	}
+}
+
+func (r run) state() State {
+	if r.c == nil {
+		return State{Error: r.err}
+	}
+	return r.c.State()
+}
+
 var (
-	mu       sync.Mutex
-	active   *Controller
-	prober   *xrayProber
-	startErr string
+	mu      sync.Mutex
+	primary run            // Smart's balancer, when the session has one
+	regions map[string]run // by balancer tag
 )
 
-// Start attaches a controller to a running core, replacing any previous one.
-// On error the core keeps running on its balancer's own strategy, and the
-// reason is reported by CurrentState.
+// Start attaches the controllers to a running core, replacing any previous
+// ones. On error a balancer keeps running on its own strategy, and the
+// reason is reported by CurrentState. The returned error is the main
+// controller's; a region that cannot start leaves the others running.
 func Start(instance *core.Instance, s Settings) error { return startWith(instance, s, DefaultTiming) }
 
 func startWith(instance *core.Instance, s Settings, t Timing) error {
 	Stop()
-	c, p, err := build(instance, s, t)
+	var mainErr error
+	var m run
+	if s.BalancerTag != "" || len(s.Order) > 0 {
+		m, mainErr = startOne(instance, s.BalancerTag, s.Order, s.Labels, s.ProbeURL, t, nil)
+	}
+	rs := make(map[string]run, len(s.Regions))
+	for _, r := range s.Regions {
+		// One controller per balancer: a second one would pin against the
+		// first, and the first, no longer in the map, would never be stopped.
+		if _, dup := rs[r.BalancerTag]; dup {
+			continue
+		}
+		var fallback func() string
+		switch r.Fallback {
+		case "":
+		case FallbackMain:
+			fallback = mainCurrent
+		default:
+			target := r.Fallback
+			fallback = func() string { return target }
+		}
+		rs[r.BalancerTag], _ = startOne(instance, r.BalancerTag, r.Order, r.Labels, r.ProbeURL, t, fallback)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	primary, regions = m, rs
+	return mainErr
+}
+
+func startOne(instance *core.Instance, balancerTag string, order []string, labels map[string]string, probeURL string, t Timing, fallback func() string) (run, error) {
+	c, p, err := build(instance, balancerTag, order, labels, probeURL, t)
 	if err == nil {
+		c.SetFallback(fallback)
 		if err = c.Start(); err != nil {
 			p.close()
 		}
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	if err != nil {
-		startErr = err.Error()
-		return err
+		return run{err: err.Error()}, err
 	}
-	active, prober, startErr = c, p, ""
-	return nil
+	return run{c: c, p: p}, nil
 }
 
-// Stop ends the controller. Called before the core closes.
-func Stop() {
+// mainCurrent is the main controller's current server, or "" when none is
+// running — a region falling back to "main" then has nowhere to go.
+func mainCurrent() string {
 	mu.Lock()
-	c, p := active, prober
-	active, prober, startErr = nil, nil, ""
-	mu.Unlock()
-	if c != nil {
-		c.Stop()
-	}
-	if p != nil {
-		p.close()
-	}
-}
-
-func CurrentState() State {
-	mu.Lock()
-	c, e := active, startErr
+	c := primary.c
 	mu.Unlock()
 	if c == nil {
-		return State{Error: e}
+		return ""
 	}
-	return c.State()
+	if st := c.State(); st.Running {
+		return st.Current
+	}
+	return ""
 }
 
+// Stop ends every controller. Called before the core closes.
+func Stop() {
+	mu.Lock()
+	m, rs := primary, regions
+	primary, regions = run{}, nil
+	mu.Unlock()
+	m.stop()
+	for _, r := range rs {
+		r.stop()
+	}
+}
+
+// CurrentState is the main controller's state (empty when there is none),
+// with every region's under Regions. No controller's lock is taken while mu
+// is held: a region's fallback takes mu, then the main controller's.
+func CurrentState() State {
+	mu.Lock()
+	m := primary
+	rs := make(map[string]run, len(regions))
+	for tag, r := range regions {
+		rs[tag] = r
+	}
+	mu.Unlock()
+	st := m.state()
+	if len(rs) > 0 {
+		st.Regions = make(map[string]State, len(rs))
+		for tag, r := range rs {
+			st.Regions[tag] = r.state()
+		}
+	}
+	return st
+}
+
+// SetOrder reorders the main controller's fallbacks (regions are ordered at
+// start).
 func SetOrder(order []string) error {
 	mu.Lock()
-	c := active
+	c := primary.c
 	mu.Unlock()
 	if c == nil {
 		return ErrNotRunning
@@ -94,11 +192,11 @@ func SetOrder(order []string) error {
 	return c.SetOrder(order)
 }
 
-func build(instance *core.Instance, s Settings, t Timing) (*Controller, *xrayProber, error) {
+func build(instance *core.Instance, balancerTag string, order []string, labels map[string]string, probeURL string, t Timing) (*Controller, *xrayProber, error) {
 	if instance == nil {
 		return nil, nil, errors.New("failover: core is not running")
 	}
-	if s.BalancerTag == "" || s.ProbeURL == "" {
+	if balancerTag == "" || probeURL == "" {
 		return nil, nil, errors.New("failover: balancerTag and probeUrl are required")
 	}
 	om, _ := instance.GetFeature(outbound.ManagerType()).(outbound.Manager)
@@ -107,7 +205,7 @@ func build(instance *core.Instance, s Settings, t Timing) (*Controller, *xrayPro
 	if om == nil || overrider == nil || dispatcher == nil {
 		return nil, nil, errors.New("failover: core has no outbound manager, router or dispatcher")
 	}
-	for _, tag := range s.Order {
+	for _, tag := range order {
 		if om.GetHandler(tag) == nil {
 			return nil, nil, fmt.Errorf("%w: %q", ErrUnknownTag, tag)
 		}
@@ -116,8 +214,8 @@ func build(instance *core.Instance, s Settings, t Timing) (*Controller, *xrayPro
 	// exported for exactly this lookup; xray's own observatory probes the
 	// same way from inside the core.
 	ctx := context.WithValue(context.Background(), core.XrayKey(1), instance)
-	p := &xrayProber{ctx: ctx, dispatcher: dispatcher, url: s.ProbeURL, timeout: t.ProbeTimeout, kept: map[string]*http.Client{}}
-	c, err := NewController(t, s.Order, s.Labels, p, routerPinner{overrider, s.BalancerTag}, observatoryHealth(ctx, instance))
+	p := &xrayProber{ctx: ctx, dispatcher: dispatcher, url: probeURL, timeout: t.ProbeTimeout, kept: map[string]*http.Client{}}
+	c, err := NewController(t, order, labels, p, routerPinner{overrider, balancerTag}, observatoryHealth(ctx, instance))
 	if err != nil {
 		return nil, nil, err
 	}

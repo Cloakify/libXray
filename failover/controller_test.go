@@ -221,6 +221,83 @@ func TestControllerStopIsPrompt(t *testing.T) {
 	}
 }
 
+// startRegion is startController with a fallback set before Start.
+func startRegion(t *testing.T, prober *fakeProber, pinner *fakePinner, fallback func() string, order ...string) *Controller {
+	t.Helper()
+	c, err := NewController(fastTiming(), order, nil, prober, pinner, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetFallback(fallback)
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Stop)
+	return c
+}
+
+func TestRegionDownWithoutFallbackStaysPinned(t *testing.T) {
+	prober := &fakeProber{up: map[string]bool{"a": false}}
+	pinner := &fakePinner{}
+	c := startRegion(t, prober, pinner, nil, "a")
+	eventually(t, "down", func() bool { return c.State().Down })
+	time.Sleep(50 * time.Millisecond) // more probes and searches
+	if st := c.State(); pinner.get() != "a" || st.FallenBack || !st.Down {
+		t.Fatalf("pinned %q, state %+v — a down region must keep nothing moving", pinner.get(), st)
+	}
+}
+
+func TestRegionFallsBackAndReturns(t *testing.T) {
+	prober := &fakeProber{up: map[string]bool{"a": false}}
+	pinner := &fakePinner{}
+	c := startRegion(t, prober, pinner, func() string { return "proxy" }, "a")
+	eventually(t, "fallen back", func() bool {
+		st := c.State()
+		return pinner.get() == "proxy" && st.FallenBack && st.Down
+	})
+	prober.set("a", true)
+	eventually(t, "back on its own server", func() bool {
+		st := c.State()
+		return pinner.get() == "a" && !st.FallenBack && !st.Down && st.LastOkMs >= 1
+	})
+}
+
+func TestRegionFallbackFollowsItsTarget(t *testing.T) {
+	var mu sync.Mutex
+	target := "proxy-00"
+	prober := &fakeProber{up: map[string]bool{"a": false}}
+	pinner := &fakePinner{}
+	startRegion(t, prober, pinner, func() string { mu.Lock(); defer mu.Unlock(); return target }, "a")
+	eventually(t, "on the first target", func() bool { return pinner.get() == "proxy-00" })
+	mu.Lock()
+	target = "proxy-01"
+	mu.Unlock()
+	eventually(t, "on the moved target", func() bool { return pinner.get() == "proxy-01" })
+}
+
+func TestRegionFallbackWithNoTargetStaysDown(t *testing.T) {
+	prober := &fakeProber{up: map[string]bool{"a": false}}
+	pinner := &fakePinner{}
+	c := startRegion(t, prober, pinner, func() string { return "" }, "a")
+	eventually(t, "down", func() bool { return c.State().Down })
+	time.Sleep(50 * time.Millisecond)
+	if st := c.State(); pinner.get() != "a" || st.FallenBack {
+		t.Fatalf("pinned %q, state %+v", pinner.get(), st)
+	}
+}
+
+func TestRegionFallenBackMovesToAnotherServerOfItsOwn(t *testing.T) {
+	prober := &fakeProber{up: map[string]bool{"a": false, "b": false}}
+	pinner := &fakePinner{}
+	c := startRegion(t, prober, pinner, func() string { return "proxy" }, "a", "b")
+	eventually(t, "fallen back", func() bool { return c.State().FallenBack })
+	prober.set("b", true)
+	eventually(t, "on b", func() bool {
+		st := c.State()
+		return pinner.get() == "b" && st.Current == "b" && !st.FallenBack && !st.Down
+	})
+}
+
 func TestControllerRecoversPanicAndUnpins(t *testing.T) {
 	prober := &fakeProber{up: map[string]bool{}, panic: true}
 	pinner := &fakePinner{}
