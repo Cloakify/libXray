@@ -228,6 +228,47 @@ func TestXrayFailingRegionLeavesTheOthersRunning(t *testing.T) {
 	}
 }
 
+func TestXrayDuplicateRegionRunsOnce(t *testing.T) {
+	instance := startRegionCore(t)
+	url := probeServer(t, http.StatusNoContent)
+	s := Settings{Regions: []RegionSettings{
+		{BalancerTag: "region-de", Order: []string{"region-de-01"}, ProbeURL: url},
+		{BalancerTag: "region-de", Order: []string{"region-de-00"}, ProbeURL: url},
+	}}
+	if err := startWith(instance, s, fastTiming()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := overrideFor(t, instance, "region-de"); got != "region-de-01" {
+		t.Fatalf("the second entry took over: %q", got)
+	}
+}
+
+// Stop while a region is fallen back and following the main controller: the
+// race detector (validate.yml) watches the pins and the state.
+func TestXrayStopWhileFallenBack(t *testing.T) {
+	instance := startRegionCore(t)
+	url := probeServer(t, http.StatusNoContent)
+	s := Settings{
+		BalancerTag: "smart", Order: []string{"proxy-00", "proxy-01"}, ProbeURL: url,
+		Regions: []RegionSettings{{BalancerTag: "region-tr", Order: []string{"region-tr-00"}, ProbeURL: url, Fallback: FallbackMain}},
+	}
+	if err := startWith(instance, s, fastTiming()); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "fallen back", func() bool { return CurrentState().Regions["region-tr"].FallenBack })
+	done := make(chan struct{})
+	go func() { Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop hung while a region was fallen back")
+	}
+	if st := CurrentState(); st.Running || st.Regions != nil {
+		t.Fatalf("after Stop: %+v", st)
+	}
+}
+
 func TestXrayStopEndsEveryController(t *testing.T) {
 	instance := startRegionCore(t)
 	url := probeServer(t, http.StatusNoContent)

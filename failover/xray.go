@@ -96,6 +96,11 @@ func startWith(instance *core.Instance, s Settings, t Timing) error {
 	}
 	rs := make(map[string]run, len(s.Regions))
 	for _, r := range s.Regions {
+		// One controller per balancer: a second one would pin against the
+		// first, and the first, no longer in the map, would never be stopped.
+		if _, dup := rs[r.BalancerTag]; dup {
+			continue
+		}
 		var fallback func() string
 		switch r.Fallback {
 		case "":
