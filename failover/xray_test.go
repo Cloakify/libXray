@@ -141,11 +141,14 @@ func TestXrayRegionsAloneRunWithoutMainController(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "region-de on its live server", func() bool { return overrideFor(t, instance, "region-de") == "region-de-01" })
+	// The switch came from a search; the ping is the new server's own next
+	// probe's.
+	eventually(t, "region-de's ping", func() bool { return CurrentState().Regions["region-de"].LastOkMs >= 1 })
 	st := CurrentState()
 	if st.Running || st.Error != "" {
 		t.Fatalf("no main controller was asked for, none must be reported: %+v", st)
 	}
-	if r := st.Regions["region-de"]; !r.Running || r.Current != "region-de-01" || r.LastOkMs < 1 {
+	if r := st.Regions["region-de"]; !r.Running || r.Current != "region-de-01" {
 		t.Fatalf("region state %+v", r)
 	}
 }

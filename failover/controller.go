@@ -323,6 +323,7 @@ func (c *Controller) search(ctx context.Context, verified map[string]bool) {
 			c.record(from, batch[i], ReasonUnreachable)
 			c.stuck = false
 			c.fallenTo = "" // the pin is on a live server of our own again
+			c.lastOk = 0    // the old server's ping is not this one's: its next probe gives it
 			c.mu.Unlock()
 			return
 		}
