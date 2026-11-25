@@ -116,8 +116,9 @@ type PingBatchItemResponse struct {
 
 type RunXrayRequest struct {
 	XrayJson string `json:"xrayJson,omitempty"`
-	// Smart mode's sticky failover (failover.Settings); empty for every other
-	// session. Raw so the gomobile-bound API stays free of the failover types.
+	// The sticky failover controllers (failover.Settings): Smart mode's, and
+	// one per split-tunnel region; empty for a session with neither. Raw so
+	// the gomobile-bound API stays free of the failover types.
 	Failover json.RawMessage `json:"failover,omitempty"`
 }
 

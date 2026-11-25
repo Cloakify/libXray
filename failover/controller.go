@@ -42,6 +42,15 @@ type State struct {
 	CurrentLabel string  `json:"currentLabel,omitempty"`
 	LastSwitch   *Switch `json:"lastSwitch,omitempty"`
 	Error        string  `json:"error,omitempty"`
+	// Down: an outage with no server left to move to (a noFallback event).
+	Down bool `json:"down,omitempty"`
+	// FallenBack: down, and pinned to the fallback target meanwhile.
+	FallenBack bool `json:"fallenBack,omitempty"`
+	// LastOkMs: how long the last successful probe of the current server
+	// took — the ping a page shows, at no extra probe. 0 until one succeeds.
+	LastOkMs int64 `json:"lastOkMs,omitempty"`
+	// Regions: each region's controller, by balancer tag (top level only).
+	Regions map[string]State `json:"regions,omitempty"`
 }
 
 type Controller struct {
@@ -58,6 +67,20 @@ type Controller struct {
 	last    *Switch
 	seq     int
 	stuck   bool // a noFallback event was already recorded for this outage
+	// fallback names where traffic goes while the outage lasts (a region's
+	// "use the current server" setting); nil = nowhere: it stays pinned to
+	// its dead server, so nothing leaves. Called without c.mu held.
+	fallback func() string
+	fallenTo string        // the fallback target pinned now, "" when not fallen back
+	lastOk   time.Duration // the last successful probe of the current server
+}
+
+// SetFallback sets where traffic goes while every server is down. Before
+// Start.
+func (c *Controller) SetFallback(f func() string) {
+	c.mu.Lock()
+	c.fallback = f
+	c.mu.Unlock()
 }
 
 func NewController(t Timing, order []string, labels map[string]string, prober Prober, pinner Pinner, health func(string) Health) (*Controller, error) {
@@ -100,7 +123,11 @@ func (c *Controller) State() State {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cur := c.policy.Current()
-	st := State{Running: c.running, Current: cur, CurrentLabel: c.labels[cur]}
+	st := State{Running: c.running, Current: cur, CurrentLabel: c.labels[cur], Down: c.stuck, FallenBack: c.fallenTo != ""}
+	if c.lastOk > 0 {
+		// Rounded up: a success faster than a millisecond is still one.
+		st.LastOkMs = max(c.lastOk.Milliseconds(), 1)
+	}
 	if c.last != nil {
 		sw := *c.last
 		st.LastSwitch = &sw
@@ -138,7 +165,9 @@ func (c *Controller) loop(ctx context.Context) {
 		c.mu.Lock()
 		tag, fresh := c.policy.Current(), c.policy.TakeFresh(c.now())
 		c.mu.Unlock()
+		started := time.Now()
 		ok := c.prober.Probe(ctx, tag, fresh)
+		took := time.Since(started)
 		if ctx.Err() != nil {
 			return
 		}
@@ -146,6 +175,9 @@ func (c *Controller) loop(ctx context.Context) {
 		search := c.policy.OnProbe(c.now(), ok)
 		if ok {
 			c.stuck = false
+			// At least 1 ns: a success still counts on a clock too coarse
+			// to time it.
+			c.lastOk = max(took, time.Nanosecond)
 		}
 		confirmations := c.policy.Confirmations()
 		var first []string
@@ -155,17 +187,60 @@ func (c *Controller) loop(ctx context.Context) {
 			}
 		}
 		c.mu.Unlock()
+		if ok {
+			c.pinOwn()
+		}
 		var verified map[string]bool
 		if confirmations > 0 {
-			search, verified = c.confirm(ctx, tag, confirmations, first)
+			var recovered bool
+			search, verified, recovered = c.confirm(ctx, tag, confirmations, first)
 			if ctx.Err() != nil {
 				return
+			}
+			if recovered {
+				c.pinOwn()
 			}
 		}
 		if search {
 			c.search(ctx, verified)
 		}
+		// A main controller that switched servers meanwhile takes the
+		// fallen-back traffic with it.
+		c.followFallback()
 	}
+}
+
+// pinOwn pins the current server again once a probe of it succeeded while
+// traffic was on the fallback target.
+func (c *Controller) pinOwn() {
+	c.mu.Lock()
+	fallen, cur := c.fallenTo != "", c.policy.Current()
+	c.mu.Unlock()
+	if !fallen || c.pinner.Pin(cur) != nil {
+		return
+	}
+	c.mu.Lock()
+	c.fallenTo = ""
+	c.mu.Unlock()
+}
+
+// followFallback pins the fallback target while the outage lasts, and moves
+// with it. With no fallback, or no target ("main" with no main controller
+// running), the pin stays on the dead server: nothing leaves.
+func (c *Controller) followFallback() {
+	c.mu.Lock()
+	f, stuck, fallen := c.fallback, c.stuck, c.fallenTo
+	c.mu.Unlock()
+	if f == nil || !stuck {
+		return
+	}
+	target := f()
+	if target == "" || target == fallen || c.pinner.Pin(target) != nil {
+		return
+	}
+	c.mu.Lock()
+	c.fallenTo = target
+	c.mu.Unlock()
 }
 
 // confirm decides whether the failure just seen is an outage: n more probes
@@ -173,8 +248,9 @@ func (c *Controller) loop(ctx context.Context) {
 // one fails. The first fallbacks are verified alongside, so a confirmed outage
 // switches without waiting for them — the whole decision takes one probe's
 // time. If the network itself is down they fail too, and nothing switches.
-// Returns whether to search, and the fallbacks' results by tag.
-func (c *Controller) confirm(ctx context.Context, tag string, n int, first []string) (bool, map[string]bool) {
+// Returns whether to search, the fallbacks' results by tag, and whether the
+// current server answered after all.
+func (c *Controller) confirm(ctx context.Context, tag string, n int, first []string) (bool, map[string]bool, bool) {
 	confirmed := make([]bool, n)
 	results := make([]bool, len(first))
 	var wg sync.WaitGroup
@@ -203,14 +279,14 @@ func (c *Controller) confirm(ctx context.Context, tag string, n int, first []str
 		if ok {
 			c.policy.OnProbe(c.now(), true)
 			c.stuck = false
-			return false, nil
+			return false, nil, true
 		}
 	}
 	search := false
 	for range confirmed {
 		search = c.policy.OnProbe(c.now(), false)
 	}
-	return search, verified
+	return search, verified, false
 }
 
 // search verifies fallbacks batch by batch and pins the best one that passes.
@@ -246,6 +322,7 @@ func (c *Controller) search(ctx context.Context, verified map[string]bool) {
 			from := c.policy.SwitchTo(c.now(), batch[i])
 			c.record(from, batch[i], ReasonUnreachable)
 			c.stuck = false
+			c.fallenTo = "" // the pin is on a live server of our own again
 			c.mu.Unlock()
 			return
 		}
@@ -256,6 +333,7 @@ func (c *Controller) search(ctx context.Context, verified map[string]bool) {
 		c.stuck = true
 	}
 	c.mu.Unlock()
+	c.followFallback()
 }
 
 // record needs c.mu held.
